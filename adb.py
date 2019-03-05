@@ -69,6 +69,9 @@ class Device(object):
 		while True:
 			state = self.get_prop('sys.boot_completed')
 
+	def get_codename(self):
+		return self.get_prop('ro.hardware')
+
 	def get_state(self, *args, **kwargs):
 		ret = None
 		stderr = None
@@ -201,13 +204,15 @@ class Device(object):
 		if getattr(self, 'pvs_bin', None) is None:
 			for file in files:
 				ret, stdout, stderr = self.shell("cat {}".format(file), *args, **kwargs)
-				if ret == 0 and len(stdout) < 25:	#FIXME: Hard-coded rule
+				if ret == 0 and len(stdout) < 30:	#FIXME: Hard-coded rule
 					pvs_bin = stdout.strip()
 					self.pvs_bin = pvs_bin
 				else:
 					logger.error("Failed to read pvs_bin: \n{}\n".format(stderr))
 		return pvs_bin
 
+	def reboot(self, *args, **kwargs):
+		self.shell('reboot', *args, **kwargs)
 
 	def __str__(self):
 		return self.deviceid

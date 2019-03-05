@@ -18,6 +18,9 @@ import math
 import cpuprof
 from cpuprof import adb
 
+
+DEBUG = False
+
 Level = collections.namedtuple('Level', 'CPU_KHz  PLL_L_Val   L2_KHz  VDD_Dig  VDD_Mem  BW_Mbps  VDD_Core  UA_Core  AVS')
 
 def get_frequencies(device):
@@ -48,15 +51,15 @@ def test_undervolt(device, level, vdd, frequencies):
 	ncpus = device.get_ncpus()
 	assert ncpus != None, "#CPUs is None"
 
-	for cpu in range(0, ncpus):
+	for cpu in range(ncpus):
 		device.set_core(cpu, 1)
 	# Now set it to the lowest frequency that is != level.CPU_KHz
-	device.set_governor(cpu, 'userspace')
+	device.shell("cpufreq set gov userspace")
 	for f in frequencies:
 		min_freq = f
 		if min_freq != level.CPU_KHz:
 			break
-	device.set_frequency(cpu, min_freq)
+	device.shell("cpufreq set freq {}".format(min_freq))
 
 	# Now, set voltage
 	ret, stdout, stderr = device.shell("echo {}>/sys/dvfs/vdd".format(vdd))
@@ -66,8 +69,7 @@ def test_undervolt(device, level, vdd, frequencies):
 	result = True
 	try:
 		# Now, set it to the corresponding frequency
-		for cpu in range(ncpus):
-			device.set_frequency(cpu, level.CPU_KHz, wait_for_online=False)
+		device.shell("cpufreq set freq {}".format(level.CPU_KHz), wait_for_online=False)
 
 		# Toggle screen to make sure it stays on
 		device.toggle_screen(wait_for_online=False)
@@ -76,10 +78,11 @@ def test_undervolt(device, level, vdd, frequencies):
 
 		# Now run workload
 		# We iterate twice since, sometimes, the workload runs the first time and reboots once finished
-		iterations = 2
+		iterations = 2 if not DEBUG else 1
 		device.shell("am broadcast -a MyGLRenderer.start", wait_for_online=False)
 		for i in range(iterations):
-			ret, stdout, stderr = device.shell(r"cpupower -n 4 -f {} -c 4 -- pi 100000 0 0".format(level.CPU_KHz), wait_for_online=False)
+			#ret, stdout, stderr = device.shell(r"cpupower -n 4 -f {} -c 4 -- pi 100000 0 0".format(level.CPU_KHz), wait_for_online=False)
+			ret, stdout, stderr = device.shell(r'''cpu-stress -j {} -t 60'''.format(ncpus))
 			if ret != 0:
 				raise Exception("ret = {}: {}".format(ret, stderr))
 			else:
@@ -89,16 +92,20 @@ def test_undervolt(device, level, vdd, frequencies):
 			logger.info(stdout)
 			time.sleep(1)
 		device.shell("am broadcast -a MyGLRenderer.stop", wait_for_online=False)
-		for cpu in range(ncpus):
-			device.set_core(cpu, 1, wait_for_online=False)
-			device.set_frequency(cpu, 300000, wait_for_online=False)
+		device.shell("cpufreq set freq {}".format(frequencies[0]))
 	except Exception, e:
 		logger.info("Failed! Phone probably rebooting..Got exception: {}".format(e))
 		result = False
 	finally:
 		return result
 
-def start_undervolting(device, queue=None):
+def wait_for_device(device, sleep=45):
+	logger.info("Waiting for device to finish reboot")
+	time.sleep(sleep)
+	device.wait_for_device_with_reset()
+	logger.info("Device is back..")
+
+def start_undervolting(device, frequencies, uv_frequencies, queue=None):
 	signal.signal(signal.SIGINT, signal.SIG_IGN)
 	err = None
 	min_vdd = None
@@ -107,12 +114,6 @@ def start_undervolting(device, queue=None):
 		device.root()
 		time.sleep(1)
 
-		# Get all frequencies
-		frequencies = get_frequencies(device)
-
-		# Run everything for a set of frequencies
-		uv_frequencies = [frequencies[0], frequencies[len(frequencies)/2], frequencies[-1]]
-		#uv_frequencies = [frequencies[-1]]
 		for freq in uv_frequencies:
 			try:
 				# Get voltage under frequency
@@ -121,10 +122,12 @@ def start_undervolting(device, queue=None):
 
 				# Now, read vdd
 				level = get_level(device)
-
+				if level.CPU_KHz != freq:
+					raise Exception("Tried to set level '{}' but somehow ended up with '{}'".format(freq, level.CPU_KHz))
 				max_vdd = level.VDD_Core
 				min_vdd = max_vdd - 250000
-				vdd_range = range(min_vdd, max_vdd, 5000)
+				vdd_step = 5000 if not DEBUG else 140000
+				vdd_range = range(min_vdd, max_vdd, vdd_step)
 				vdd_range += [max_vdd]
 
 				# Now we have a list over which we can do binary search
@@ -152,10 +155,7 @@ def start_undervolting(device, queue=None):
 						# This voltage was unsuccessful, raise the min
 						mn = cur
 						# First, wait for device to come back online
-						logger.info("Waiting for device to finish reboot")
-						time.sleep(30)
-						device.wait_for_device_with_reset()
-						logger.info("Device is back..")
+						wait_for_device(device)
 						# Now root since device has rebooted
 						device.root()
 						time.sleep(1)
@@ -171,6 +171,10 @@ def start_undervolting(device, queue=None):
 			finally:
 				if queue:
 					queue.put((device.deviceid, min_vdd, freq, err))
+				# Now reboot the device to reset state
+				device.reboot()
+				wait_for_device(device, 60)
+
 	except Exception, e:
 		err = e
 		logger.error("%s - \n%s\n" % (device, traceback.format_exc()))
@@ -198,10 +202,19 @@ def main(argv):
 	queue = manager.Queue()
 
 	count = 0
-	for d in devices:
-		#pool.apply_async(func=start_undervolting, args=(d, queue, ))
-		start_undervolting(d, queue)
-		count += 1
+	for device in devices:
+		# Get all frequencies
+		frequencies = get_frequencies(device)
+
+		# Run everything for a set of frequencies
+		uv_frequencies = [frequencies[0], frequencies[len(frequencies)/2], frequencies[-1]]
+		#uv_frequencies = [frequencies[0], frequencies[-1]]
+		uv_frequencies = [uv_frequencies[-2]]
+
+
+		#pool.apply_async(func=start_undervolting, args=(device, frequencies, uv_frequencies, queue, ))
+		start_undervolting(device, frequencies, uv_frequencies, queue)
+		count += len(uv_frequencies)
 	pool.close()
 
 	idx = 0
@@ -210,7 +223,7 @@ def main(argv):
 		deviceid, min_vdd, freq, err = queue.get()
 		if err:
 			logger.error("{}".format(err))
-			raise err
+		print 'Got data for freq: {}'.format(freq)
 
 		device = None
 		for d in devices:
@@ -222,6 +235,8 @@ def main(argv):
 			device_map[deviceid] = {
 				'pvs_bin': device.get_pvs_bin(),
 			}
+		if err is not None:
+			device_map[deviceid][freq]['error'] = str(err)
 		device_map[deviceid][freq] = {
 			'min_vdd': min_vdd
 		}
