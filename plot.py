@@ -58,7 +58,7 @@ def save_plot(outdir, name, fig=None, **kwargs):
 
 
 def plot_cdf(points, ax, labels, xlabel, ylabel='\\textbf{CDF}', binwidth=0.01,
-		title=None, color='k', legend=True, markers=False):
+		title=None, color='k', legend=True, markers=False, linestyle='solid'):
 	if not isinstance(points, list):
 		points = [points]
 	if not labels:
@@ -90,9 +90,9 @@ def plot_cdf(points, ax, labels, xlabel, ylabel='\\textbf{CDF}', binwidth=0.01,
 			x_axis.insert(0, x_axis[0])
 			logger.debug('len(cumsum): %d, len(xaxis): %d' % (len(cumsum), len(x_axis)))
 			if not color:
-				ax.plot(x_axis, cumsum, label=label, marker=markers[idx], markersize=3, markeredgewidth=0, rasterized=rasterized)
+				ax.plot(x_axis, cumsum, label=label, marker=markers[idx], markersize=3, markeredgewidth=0, rasterized=rasterized, linestyle=linestyle)
 			else:
-				ax.plot(x_axis, cumsum, label=label, marker=markers[idx], markersize=3, markeredgewidth=0, rasterized=rasterized, color=color)
+				ax.plot(x_axis, cumsum, label=label, marker=markers[idx], markersize=3, markeredgewidth=0, rasterized=rasterized, linestyle=linestyle, color=color)
 		except Exception, e:
 			print e
 			continue
